@@ -114,7 +114,7 @@ bool DynamixelController::loadDynamixels(void)
       return result;
     }
     else
-    {      
+    {
       ROS_INFO("Name : %s, ID : %d, Model Number : %d", dxl.first.c_str(), dxl.second, model_number);
     }
   }
@@ -147,7 +147,7 @@ bool DynamixelController::initDynamixels(void)
       }
     }
 
-    dxl_wb_->torqueOn((uint8_t)dxl.second);
+    dxl_wb_->torqueOff((uint8_t)dxl.second);
   }
 
   return true;
@@ -178,12 +178,32 @@ bool DynamixelController::initControlItems(void)
   if (present_current == NULL)  present_current = dxl_wb_->getItemInfo(it->second, "Present_Load");
   if (present_current == NULL) return false;
 
+  const ControlItem *present_voltage = dxl_wb_->getItemInfo(it->second, "Present_Voltage");
+  if (present_voltage == NULL) return false;
+
+  const ControlItem *present_temperature = dxl_wb_->getItemInfo(it->second, "Present_Temperature");
+  if (present_temperature == NULL) return false;
+
+  const ControlItem *torque_enable = dxl_wb_->getItemInfo(it->second, "Torque_Enable");
+  if (torque_enable == NULL) return false;
+
+  const ControlItem *moving = dxl_wb_->getItemInfo(it->second, "Moving");
+  if (moving == NULL) return false;
+
+  const ControlItem *led = dxl_wb_->getItemInfo(it->second, "LED");
+  if (led == NULL) return false;
+
   control_items_["Goal_Position"] = goal_position;
   control_items_["Goal_Velocity"] = goal_velocity;
 
   control_items_["Present_Position"] = present_position;
   control_items_["Present_Velocity"] = present_velocity;
   control_items_["Present_Current"] = present_current;
+  control_items_["Present_Voltage"] = present_position;
+  control_items_["Present_Temperature"] = present_temperature;
+  control_items_["Torque_Enable"] = torque_enable;
+  control_items_["Moving"] = moving;
+  control_items_["LED"] = led;
 
   return true;
 }
@@ -217,8 +237,19 @@ bool DynamixelController::initSDKHandlers(void)
     ROS_INFO("%s", log);
   }
 
+  result = dxl_wb_->addSyncWriteHandler(control_items_["Torque_Enable"]->address, control_items_["Torque_Enable"]->data_length, &log);
+  if (result == false)
+  {
+    ROS_ERROR("%s", log);
+    return result;
+  }
+  else
+  {
+    ROS_INFO("%s", log);
+  }
+
   if (dxl_wb_->getProtocolVersion() == 2.0f)
-  {  
+  {
     uint16_t start_address = std::min(control_items_["Present_Position"]->address, control_items_["Present_Current"]->address);
     uint16_t read_length = control_items_["Present_Position"]->data_length + control_items_["Present_Velocity"]->data_length + control_items_["Present_Current"]->data_length;
 
@@ -310,19 +341,23 @@ bool DynamixelController::getPresentPosition(std::vector<std::string> dxl_name)
 
 void DynamixelController::initPublisher()
 {
-  dynamixel_state_list_pub_ = priv_node_handle_.advertise<dynamixel_workbench_msgs::DynamixelStateList>("dynamixel_state", 100);
+  //dynamixel_state_list_pub_ = priv_node_handle_.advertise<dynamixel_workbench_msgs::DynamixelStateList>("dynamixel_state", 100);
+  dynamixel_status_list_pub_ = priv_node_handle_.advertise<dynamixel_workbench_msgs::DynamixelStatusList>("dynamixel_status", 100);
   if (is_joint_state_topic_) joint_states_pub_ = priv_node_handle_.advertise<sensor_msgs::JointState>("joint_states", 100);
 }
 
 void DynamixelController::initSubscriber()
 {
-  trajectory_sub_ = priv_node_handle_.subscribe("joint_trajectory", 100, &DynamixelController::trajectoryMsgCallback, this);
+  //trajectory_sub_ = priv_node_handle_.subscribe("joint_trajectory", 100, &DynamixelController::trajectoryMsgCallback, this);
   if (is_cmd_vel_topic_) cmd_vel_sub_ = priv_node_handle_.subscribe("cmd_vel", 10, &DynamixelController::commandVelocityCallback, this);
 }
 
 void DynamixelController::initServer()
 {
   dynamixel_command_server_ = priv_node_handle_.advertiseService("dynamixel_command", &DynamixelController::dynamixelCommandMsgCallback, this);
+  dynamixel_set_torque_server_ = priv_node_handle_.advertiseService("torque_enable", &DynamixelController::dynamixelTorqueEnableMsgCallback, this);
+  dynamixel_set_position_server_ = priv_node_handle_.advertiseService("goal_position", &DynamixelController::dynamixelGoalPositionMsgCallback, this);
+  dynamixel_set_speed_server_ = priv_node_handle_.advertiseService("goal_speed", &DynamixelController::dynamixelGoalSpeedMsgCallback, this);
 }
 
 void DynamixelController::readCallback(const ros::TimerEvent&)
@@ -331,22 +366,37 @@ void DynamixelController::readCallback(const ros::TimerEvent&)
   static double priv_read_secs =ros::Time::now().toSec();
 #endif
   bool result = false;
+  bool result_custom = false;
+  bool result_moving = false;
   const char* log = NULL;
 
-  dynamixel_workbench_msgs::DynamixelState  dynamixel_state[dynamixel_.size()];
-  dynamixel_state_list_.dynamixel_state.clear();
+  // dynamixel_workbench_msgs::DynamixelState  dynamixel_state[dynamixel_.size()];
+  // dynamixel_state_list_.dynamixel_state.clear();
 
-  int32_t get_current[dynamixel_.size()];
-  int32_t get_velocity[dynamixel_.size()];
+  dynamixel_workbench_msgs::DynamixelStatus  dynamixel_status[dynamixel_.size()];
+  dynamixel_status_list_.dynamixel_status.clear();
+
   int32_t get_position[dynamixel_.size()];
+  int32_t get_velocity[dynamixel_.size()];
+  int32_t get_load[dynamixel_.size()];
+  int32_t get_current[dynamixel_.size()];
+  int32_t get_voltage[dynamixel_.size()];
+  int32_t get_temperature[dynamixel_.size()];
+  uint8_t get_moving[dynamixel_.size()];
+  uint8_t get_torque_state[dynamixel_.size()];
+  uint8_t get_led_state[dynamixel_.size()];
 
   uint8_t id_array[dynamixel_.size()];
   uint8_t id_cnt = 0;
 
+
+
   for (auto const& dxl:dynamixel_)
   {
-    dynamixel_state[id_cnt].name = dxl.first;
-    dynamixel_state[id_cnt].id = (uint8_t)dxl.second;
+    // dynamixel_state[id_cnt].name = dxl.first;
+    // dynamixel_state[id_cnt].id = (uint8_t)dxl.second;
+    dynamixel_status[id_cnt].name = dxl.first;
+    dynamixel_status[id_cnt].id = (uint8_t)dxl.second;
 
     id_array[id_cnt++] = (uint8_t)dxl.second;
   }
@@ -401,45 +451,98 @@ void DynamixelController::readCallback(const ros::TimerEvent&)
         ROS_ERROR("%s", log);
       }
 
-      for(uint8_t index = 0; index < id_cnt; index++)
-      {
-        dynamixel_state[index].present_current = get_current[index];
-        dynamixel_state[index].present_velocity = get_velocity[index];
-        dynamixel_state[index].present_position = get_position[index];
-
-        dynamixel_state_list_.dynamixel_state.push_back(dynamixel_state[index]);
-      }
+      // for(uint8_t index = 0; index < id_cnt; index++)
+      // {
+      //   dynamixel_state[index].present_current = get_current[index];
+      //   dynamixel_state[index].present_velocity = get_velocity[index];
+      //   dynamixel_state[index].present_position = get_position[index];
+      //
+      //   dynamixel_state_list_.dynamixel_state.push_back(dynamixel_state[index]);
+      // }
     }
     else if(dxl_wb_->getProtocolVersion() == 1.0f)
     {
-      uint16_t length_of_data = control_items_["Present_Position"]->data_length + 
-                                control_items_["Present_Velocity"]->data_length + 
-                                control_items_["Present_Current"]->data_length;
-      uint32_t get_all_data[length_of_data];
+      // uint16_t length_of_data = control_items_["Present_Position"]->data_length +
+      //                           control_items_["Present_Velocity"]->data_length +
+      //                           control_items_["Present_Current"]->data_length;
+      // uint32_t get_all_data[length_of_data];
+
+      uint16_t length_of_data_custom = control_items_["Present_Position"]->data_length +
+                                       control_items_["Present_Velocity"]->data_length +
+                                       control_items_["Present_Current"]->data_length +
+                                       control_items_["Present_Voltage"]->data_length +
+                                       control_items_["Present_Temperature"]->data_length;
+      uint32_t get_all_data_custom[length_of_data_custom];
+
+      uint16_t length_of_data_custom2 = control_items_["Moving"]->data_length;
+      uint32_t get_all_data_custom2[length_of_data_custom2];
+
+      uint16_t length_of_data_custom3 = control_items_["Torque_Enable"]->data_length +
+                                        control_items_["LED"]->data_length;
+      uint32_t get_all_data_custom3[length_of_data_custom3];
+
+      // TODO: Implemente LED
+      // printf("LED %i\n",control_items_["LED"]->data_length);
+      // printf("LED %i\n",control_items_["LED"]->address);
+
       uint8_t dxl_cnt = 0;
       for (auto const& dxl:dynamixel_)
       {
+        // result = dxl_wb_->readRegister((uint8_t)dxl.second,
+        //                                control_items_["Present_Position"]->address,
+        //                                length_of_data,
+        //                                get_all_data,
+        //                                &log);
+
         result = dxl_wb_->readRegister((uint8_t)dxl.second,
-                                       control_items_["Present_Position"]->address,
-                                       length_of_data,
-                                       get_all_data,
-                                       &log);
-        if (result == false)
+                                        control_items_["Present_Position"]->address,
+                                        length_of_data_custom,
+                                        get_all_data_custom,
+                                        &log);
+
+        result_moving = dxl_wb_->readRegister((uint8_t)dxl.second,
+                                        control_items_["Moving"]->address,
+                                        length_of_data_custom2,
+                                        get_all_data_custom2,
+                                        &log);
+
+        result_custom = dxl_wb_->readRegister((uint8_t)dxl.second,
+                                        control_items_["Torque_Enable"]->address,
+                                        length_of_data_custom3,
+                                        get_all_data_custom3,
+                                        &log);
+
+
+        if (result == false || result_custom == false || result_moving == false)
         {
           ROS_ERROR("%s", log);
         }
+        // dynamixel_state[dxl_cnt].present_current = DXL_MAKEWORD(get_all_data_custom[4], get_all_data_custom[5]);
+        // dynamixel_state[dxl_cnt].present_velocity = DXL_MAKEWORD(get_all_data_custom[2], get_all_data_custom[3]);
+        // dynamixel_state[dxl_cnt].present_position = DXL_MAKEWORD(get_all_data_custom[0], get_all_data_custom[1]);
+        // dynamixel_state_list_.dynamixel_state.push_back(dynamixel_state[dxl_cnt]);
 
-        dynamixel_state[dxl_cnt].present_current = DXL_MAKEWORD(get_all_data[4], get_all_data[5]);
-        dynamixel_state[dxl_cnt].present_velocity = DXL_MAKEWORD(get_all_data[2], get_all_data[3]);
-        dynamixel_state[dxl_cnt].present_position = DXL_MAKEWORD(get_all_data[0], get_all_data[1]);
+        dynamixel_status[dxl_cnt].present_temperature = get_all_data_custom[7];
+        dynamixel_status[dxl_cnt].present_voltage = get_all_data_custom[6];
+        dynamixel_status[dxl_cnt].present_current = DXL_MAKEWORD(get_all_data_custom[4], get_all_data_custom[5]);
+        dynamixel_status[dxl_cnt].present_velocity = DXL_MAKEWORD(get_all_data_custom[2], get_all_data_custom[3]);
+        dynamixel_status[dxl_cnt].present_position = DXL_MAKEWORD(get_all_data_custom[0], get_all_data_custom[1]);
+        dynamixel_status[dxl_cnt].moving = get_all_data_custom2[0];
+        // dynamixel_status[dxl_cnt].led = get_all_data_custom3[1];
+        dynamixel_status[dxl_cnt].torque_enable = get_all_data_custom3[0];
+        dynamixel_status[dxl_cnt].header.stamp = ros::Time::now();
+        dynamixel_status_list_.dynamixel_status.push_back(dynamixel_status[dxl_cnt]);
 
-        dynamixel_state_list_.dynamixel_state.push_back(dynamixel_state[dxl_cnt]);
+
         dxl_cnt++;
       }
+
+
     }
 #ifndef DEBUG
   }
 #endif
+
 
 #ifdef DEBUG
   ROS_WARN("[readCallback] diff_secs : %f", ros::Time::now().toSec() - priv_read_secs);
@@ -452,7 +555,9 @@ void DynamixelController::publishCallback(const ros::TimerEvent&)
 #ifdef DEBUG
   static double priv_pub_secs =ros::Time::now().toSec();
 #endif
-  dynamixel_state_list_pub_.publish(dynamixel_state_list_);
+  //dynamixel_state_list_pub_.publish(dynamixel_state_list_);
+
+  dynamixel_status_list_pub_.publish(dynamixel_status_list_);
 
   if (is_joint_state_topic_)
   {
@@ -474,13 +579,13 @@ void DynamixelController::publishCallback(const ros::TimerEvent&)
 
       if (dxl_wb_->getProtocolVersion() == 2.0f)
       {
-        if (strcmp(dxl_wb_->getModelName((uint8_t)dxl.second), "XL-320") == 0) effort = dxl_wb_->convertValue2Load((int16_t)dynamixel_state_list_.dynamixel_state[id_cnt].present_current);
-        else  effort = dxl_wb_->convertValue2Current((int16_t)dynamixel_state_list_.dynamixel_state[id_cnt].present_current);
+        if (strcmp(dxl_wb_->getModelName((uint8_t)dxl.second), "XL-320") == 0) effort = dxl_wb_->convertValue2Load((int16_t)dynamixel_status_list_.dynamixel_status[id_cnt].present_current);
+        else  effort = dxl_wb_->convertValue2Current((int16_t)dynamixel_status_list_.dynamixel_status[id_cnt].present_current);
       }
-      else if (dxl_wb_->getProtocolVersion() == 1.0f) effort = dxl_wb_->convertValue2Load((int16_t)dynamixel_state_list_.dynamixel_state[id_cnt].present_current);
+      else if (dxl_wb_->getProtocolVersion() == 1.0f) effort = dxl_wb_->convertValue2Load((int16_t)dynamixel_status_list_.dynamixel_status[id_cnt].present_current);
 
-      velocity = dxl_wb_->convertValue2Velocity((uint8_t)dxl.second, (int32_t)dynamixel_state_list_.dynamixel_state[id_cnt].present_velocity);
-      position = dxl_wb_->convertValue2Radian((uint8_t)dxl.second, (int32_t)dynamixel_state_list_.dynamixel_state[id_cnt].present_position);
+      velocity = dxl_wb_->convertValue2Velocity((uint8_t)dxl.second, (int32_t)dynamixel_status_list_.dynamixel_status[id_cnt].present_velocity);
+      position = dxl_wb_->convertValue2Radian((uint8_t)dxl.second, (int32_t)dynamixel_status_list_.dynamixel_status[id_cnt].present_position);
 
       joint_state_msg_.effort.push_back(effort);
       joint_state_msg_.velocity.push_back(velocity);
@@ -749,6 +854,80 @@ bool DynamixelController::dynamixelCommandMsgCallback(dynamixel_workbench_msgs::
   }
 
   res.comm_result = result;
+
+  return true;
+}
+
+bool DynamixelController::dynamixelTorqueEnableMsgCallback(dynamixel_workbench_msgs::TorqueEnable::Request &req,
+                                                      dynamixel_workbench_msgs::TorqueEnable::Response &res)
+{
+  bool result = false;
+  const char* log;
+
+  uint8_t id = req.id;
+  bool value = req.value;
+  std::string item_name = "Torque_Enable";
+  uint8_t value_to_pub;
+
+  if (value == true)
+  {
+    value_to_pub = 1;
+  }
+  else {
+    value_to_pub = 0;
+  }
+  result = dxl_wb_->itemWrite(id, item_name.c_str(), value_to_pub, &log);
+  if (result == false)
+  {
+    ROS_ERROR("%s", log);
+    ROS_ERROR("Failed to write value[%d] on items[%s] to Dynamixel[ID : %d]", value_to_pub, item_name.c_str(), id);
+  }
+
+  res.result = result;
+
+  return true;
+}
+
+bool DynamixelController::dynamixelGoalPositionMsgCallback(dynamixel_workbench_msgs::JointCommand::Request &req,
+                                                      dynamixel_workbench_msgs::JointCommand::Response &res)
+{
+  bool result = false;
+  const char* log;
+
+  uint8_t id = req.id;
+  std::string item_name = "Goal_Position";
+  uint16_t value = req.value;
+
+  result = dxl_wb_->itemWrite(id, item_name.c_str(), value, &log);
+  if (result == false)
+  {
+    ROS_ERROR("%s", log);
+    ROS_ERROR("Failed to write value[%d] on items[%s] to Dynamixel[ID : %d]", value, item_name.c_str(), id);
+  }
+
+  res.result = result;
+
+  return true;
+}
+
+bool DynamixelController::dynamixelGoalSpeedMsgCallback(dynamixel_workbench_msgs::JointCommand::Request &req,
+                                                      dynamixel_workbench_msgs::JointCommand::Response &res)
+{
+  bool result = false;
+  const char* log;
+
+  uint8_t id = req.id;
+  std::string item_name = "Moving_Speed";
+  uint16_t value = req.value;
+
+  result = dxl_wb_->itemWrite(id, item_name.c_str(), value, &log);
+  if (result == false)
+  {
+    ROS_ERROR("%s", log);
+    ROS_ERROR("Failed to write value[%d] on items[%s] to Dynamixel[ID : %d]", value, item_name.c_str(), id);
+  }
+
+  res.result = result;
 
   return true;
 }

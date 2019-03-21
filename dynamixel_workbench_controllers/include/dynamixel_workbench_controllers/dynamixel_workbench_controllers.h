@@ -30,7 +30,10 @@
 
 #include <dynamixel_workbench_toolbox/dynamixel_workbench.h>
 #include <dynamixel_workbench_msgs/DynamixelStateList.h>
+#include <dynamixel_workbench_msgs/DynamixelStatusList.h>
 #include <dynamixel_workbench_msgs/DynamixelCommand.h>
+#include <dynamixel_workbench_msgs/TorqueEnable.h>
+#include <dynamixel_workbench_msgs/JointCommand.h>
 
 #include <dynamixel_workbench_controllers/trajectory_generator.h>
 
@@ -60,6 +63,7 @@ class DynamixelController
 
   // ROS Topic Publisher
   ros::Publisher dynamixel_state_list_pub_;
+  ros::Publisher dynamixel_status_list_pub_;
   ros::Publisher joint_states_pub_;
 
   // ROS Topic Subscriber
@@ -68,7 +72,9 @@ class DynamixelController
 
   // ROS Service Server
   ros::ServiceServer dynamixel_command_server_;
-
+  ros::ServiceServer dynamixel_set_torque_server_;
+  ros::ServiceServer dynamixel_set_position_server_;
+  ros::ServiceServer dynamixel_set_speed_server_;
   // ROS Service Client
 
   // Dynamixel Workbench Parameters
@@ -78,6 +84,7 @@ class DynamixelController
   std::map<std::string, const ControlItem*> control_items_;
   std::vector<std::pair<std::string, ItemValue>> dynamixel_info_;
   dynamixel_workbench_msgs::DynamixelStateList dynamixel_state_list_;
+  dynamixel_workbench_msgs::DynamixelStatusList dynamixel_status_list_;
   sensor_msgs::JointState joint_state_msg_;
   std::vector<WayPoint> pre_goal_;
 
@@ -126,6 +133,12 @@ class DynamixelController
   void trajectoryMsgCallback(const trajectory_msgs::JointTrajectory::ConstPtr &msg);
   bool dynamixelCommandMsgCallback(dynamixel_workbench_msgs::DynamixelCommand::Request &req,
                                    dynamixel_workbench_msgs::DynamixelCommand::Response &res);
+  bool dynamixelTorqueEnableMsgCallback(dynamixel_workbench_msgs::TorqueEnable::Request &req,
+                                 dynamixel_workbench_msgs::TorqueEnable::Response &res);
+  bool dynamixelGoalPositionMsgCallback(dynamixel_workbench_msgs::JointCommand::Request &req,
+                                 dynamixel_workbench_msgs::JointCommand::Response &res);
+  bool dynamixelGoalSpeedMsgCallback(dynamixel_workbench_msgs::JointCommand::Request &req,
+                                 dynamixel_workbench_msgs::JointCommand::Response &res);
 };
 
 #endif //DYNAMIXEL_WORKBENCH_CONTROLLERS_H
