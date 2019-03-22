@@ -174,9 +174,19 @@ bool DynamixelController::initControlItems(void)
   if (present_velocity == NULL)  present_velocity = dxl_wb_->getItemInfo(it->second, "Present_Speed");
   if (present_velocity == NULL) return false;
 
-  const ControlItem *present_current = dxl_wb_->getItemInfo(it->second, "Present_Current");
-  if (present_current == NULL)  present_current = dxl_wb_->getItemInfo(it->second, "Present_Load");
-  if (present_current == NULL) return false;
+  const ControlItem *present_load = dxl_wb_->getItemInfo(it->second, "Present_Load");
+  if (present_load == NULL) return false;
+
+  const ControlItem *present_current = dxl_wb_->getItemInfo(it->second, "Current");
+  if (present_current == NULL)
+  {
+    ROS_WARN("Current not found");
+    control_items_["Current"] = present_load;
+  }
+  else
+  {
+    control_items_["Current"] = present_current;
+  }
 
   const ControlItem *present_voltage = dxl_wb_->getItemInfo(it->second, "Present_Voltage");
   if (present_voltage == NULL) return false;
@@ -198,7 +208,7 @@ bool DynamixelController::initControlItems(void)
 
   control_items_["Present_Position"] = present_position;
   control_items_["Present_Velocity"] = present_velocity;
-  control_items_["Present_Current"] = present_current;
+  control_items_["Present_Load"] = present_load;
   control_items_["Present_Voltage"] = present_position;
   control_items_["Present_Temperature"] = present_temperature;
   control_items_["Torque_Enable"] = torque_enable;
@@ -366,8 +376,10 @@ void DynamixelController::readCallback(const ros::TimerEvent&)
   static double priv_read_secs =ros::Time::now().toSec();
 #endif
   bool result = false;
-  bool result_custom = false;
+  bool result_torque = false;
   bool result_moving = false;
+  bool result_current = false;
+  bool result_led = false;
   const char* log = NULL;
 
   // dynamixel_workbench_msgs::DynamixelState  dynamixel_state[dynamixel_.size()];
@@ -467,9 +479,10 @@ void DynamixelController::readCallback(const ros::TimerEvent&)
       //                           control_items_["Present_Current"]->data_length;
       // uint32_t get_all_data[length_of_data];
 
+
       uint16_t length_of_data_custom = control_items_["Present_Position"]->data_length +
                                        control_items_["Present_Velocity"]->data_length +
-                                       control_items_["Present_Current"]->data_length +
+                                       control_items_["Present_Load"]->data_length +
                                        control_items_["Present_Voltage"]->data_length +
                                        control_items_["Present_Temperature"]->data_length;
       uint32_t get_all_data_custom[length_of_data_custom];
@@ -477,14 +490,18 @@ void DynamixelController::readCallback(const ros::TimerEvent&)
       uint16_t length_of_data_custom2 = control_items_["Moving"]->data_length;
       uint32_t get_all_data_custom2[length_of_data_custom2];
 
-      uint16_t length_of_data_custom3 = control_items_["Torque_Enable"]->data_length +
-                                        control_items_["LED"]->data_length;
+      uint16_t length_of_data_custom3 = control_items_["Torque_Enable"]->data_length;
       uint32_t get_all_data_custom3[length_of_data_custom3];
 
-      // TODO: Implemente LED
+      uint16_t length_of_data_custom4 = control_items_["LED"]->data_length;
+      uint32_t get_all_data_custom4[length_of_data_custom4];
+
+      uint16_t length_of_data_custom5 = control_items_["Current"]->data_length;
+      uint32_t get_all_data_custom5[length_of_data_custom5];
+
+      // TODO: Implement LED
       // printf("LED %i\n",control_items_["LED"]->data_length);
       // printf("LED %i\n",control_items_["LED"]->address);
-
       uint8_t dxl_cnt = 0;
       for (auto const& dxl:dynamixel_)
       {
@@ -506,17 +523,31 @@ void DynamixelController::readCallback(const ros::TimerEvent&)
                                         get_all_data_custom2,
                                         &log);
 
-        result_custom = dxl_wb_->readRegister((uint8_t)dxl.second,
+        result_torque = dxl_wb_->readRegister((uint8_t)dxl.second,
                                         control_items_["Torque_Enable"]->address,
                                         length_of_data_custom3,
                                         get_all_data_custom3,
                                         &log);
 
+        result_led = dxl_wb_->readRegister((uint8_t)dxl.second,
+                                        control_items_["LED"]->address,
+                                        length_of_data_custom4,
+                                        get_all_data_custom4,
+                                        &log);
 
-        if (result == false || result_custom == false || result_moving == false)
+        result_current = dxl_wb_->readRegister((uint8_t)dxl.second,
+                                        control_items_["Current"]->address,
+                                        length_of_data_custom5,
+                                        get_all_data_custom5,
+                                        &log);
+
+
+
+        if (result == false || result_torque == false || result_moving == false || result_current == false || result_led == false)
         {
           ROS_ERROR("%s", log);
         }
+
         // dynamixel_state[dxl_cnt].present_current = DXL_MAKEWORD(get_all_data_custom[4], get_all_data_custom[5]);
         // dynamixel_state[dxl_cnt].present_velocity = DXL_MAKEWORD(get_all_data_custom[2], get_all_data_custom[3]);
         // dynamixel_state[dxl_cnt].present_position = DXL_MAKEWORD(get_all_data_custom[0], get_all_data_custom[1]);
@@ -524,12 +555,13 @@ void DynamixelController::readCallback(const ros::TimerEvent&)
 
         dynamixel_status[dxl_cnt].present_temperature = get_all_data_custom[7];
         dynamixel_status[dxl_cnt].present_voltage = get_all_data_custom[6];
-        dynamixel_status[dxl_cnt].present_current = DXL_MAKEWORD(get_all_data_custom[4], get_all_data_custom[5]);
+        dynamixel_status[dxl_cnt].present_load = DXL_MAKEWORD(get_all_data_custom[4], get_all_data_custom[5]);
         dynamixel_status[dxl_cnt].present_velocity = DXL_MAKEWORD(get_all_data_custom[2], get_all_data_custom[3]);
         dynamixel_status[dxl_cnt].present_position = DXL_MAKEWORD(get_all_data_custom[0], get_all_data_custom[1]);
         dynamixel_status[dxl_cnt].moving = get_all_data_custom2[0];
-        // dynamixel_status[dxl_cnt].led = get_all_data_custom3[1];
         dynamixel_status[dxl_cnt].torque_enable = get_all_data_custom3[0];
+        dynamixel_status[dxl_cnt].led =  get_all_data_custom4[0];
+        dynamixel_status[dxl_cnt].present_current = DXL_MAKEDWORD(get_all_data_custom5[0], get_all_data_custom5[1]);
         dynamixel_status[dxl_cnt].header.stamp = ros::Time::now();
         dynamixel_status_list_.dynamixel_status.push_back(dynamixel_status[dxl_cnt]);
 
